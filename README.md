@@ -1,5 +1,7 @@
 # Code and Data for paper "Reliable Identification Of Homodimers using AlphaFold"
 
+## Instructions 
+
 ## Repository Structure 
 ```
 project
