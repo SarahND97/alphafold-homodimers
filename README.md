@@ -1,6 +1,7 @@
-# Code and Data for paper "Reliable Identification Of Homodimers using AlphaFold"
+# Code for paper "Reliable Identification Of Homodimers using AlphaFold"
 
 ## Instructions 
+This repository contains the code related to the paper "Reliable Identification Of Homodimers using AlphaFold". 
 
 ## Repository Structure 
 ```
