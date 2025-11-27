@@ -1,7 +1,7 @@
 # Code for paper "Reliable Identification Of Homodimers using AlphaFold"
 
 ## Instructions 
-This repository contains the code related to the paper "Reliable Identification Of Homodimers using AlphaFold". 
+This repository contains the code related to the paper "Reliable Identification Of Homodimers using AlphaFold" by Sarah Narrowe Danielsson and Arne Elofsson. 
 
 ## Repository Structure 
 ```
