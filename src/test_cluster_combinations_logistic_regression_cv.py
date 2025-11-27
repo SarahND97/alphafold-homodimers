@@ -214,7 +214,7 @@ def parse_args():
     p.add_argument(
         "--data",
         type=str,
-        default="/proj/berzelius-2021-29/users/x_sarna/homomer_project/score_improvement/data/homodimer_final_logreg_features_071025_fident05.tsv",
+        default="../tsvs/logreg_features/homodimers_logreg_features.tsv",
         help="Path to TSV with features + 'correct_result' and 'ID'.",
     )
     p.add_argument(
