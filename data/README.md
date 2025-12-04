@@ -1,7 +1,7 @@
 # Data for paper "Reliable Identification Of Homodimers using AlphaFold"
 
 The data available in this repository are the pdbids.
-The msas, predicted_models, input_jsons for alphafold3 are found in the following Zenodo repo: 
+The msas, predicted_models, input_jsons for alphafold3 are found in the following Zenodo repo: https://zenodo.org/records/17738668
 
 ## Explanation of files: 
 `homodimer_pdbids.txt` - Positive homodimers
