@@ -1,0 +1,10 @@
+{
+    "A": {
+        "description": "8bv7_A mol:protein length:8  Vang-like protein 1",
+        "sequence": "NPNPETSV"
+    },
+    "B": {
+        "description": "8bv7_B mol:protein length:8  Vang-like protein 1",
+        "sequence": "NPNPETSV"
+    }
+}
