@@ -108,7 +108,7 @@ Other optional flags in the script:
 To predict all samples in `sample_data` with homology model and save all intermediate values and features. 
 
 ```bash
-python run.py `--pred_dir` sample_data `--save_all_outputs`          
+python run.py --pred_dir sample_data --save_all_outputs          
 ```
 
 To use logistic regression function without homology:      
