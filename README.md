@@ -1,29 +1,195 @@
-# Code for paper "Reliable Identification Of Homodimers using AlphaFold"
+# Code for paper "Reliable Identification of Homodimers using AlphaFold"
 
 ## Instructions 
-This repository contains the code related to the paper "Reliable Identification Of Homodimers using AlphaFold" by Sarah Narrowe Danielsson and Arne Elofsson. 
+This repository contains the code related to the paper `Reliable Identification of Homodimers using AlphaFold` by Sarah Narrowe Danielsson and Arne Elofsson.    
+
+### Step 1: Download repository with git: 
+Download this repository by using git clone in desired location: 
+
+```bash
+git clone git@github.com:SarahND97/alphafold-homodimers.git
+```
+
+Navigate into the cloned directory:
+
+```bash
+cd alphafold-homodimers
+```
+
+### Step 2: Activate environment using conda
+First make sure you have Anaconda or miniconda installed, instructions can be found here:     
+Anaconda: https://www.anaconda.com/docs/getting-started/anaconda/install   
+Miniconda: https://www.anaconda.com/docs/getting-started/miniconda/install    
+
+Miniconda is recommended if disk space is an issue. 
+
+Once installed and initialized, you can create a conda environment by running the following: 
+
+```bash
+conda env create -f environment.yml
+```
+
+And activate the environment by running: 
+
+```bash
+conda activate alphafold-homodimers
+```
+
+### Step 3: Running the logistic regression function
+For running the logistic regression function the following is 
+
+```bash
+python run.py --pred_dir directory_with_alphafold_predictions  
+```
+
+The directory with alphafold predictions is required to contain at least two predicted structures (.pdb files)
+and two result .pkl files with PAEs and other metrics as well as one ranked_0.pdb file. 
+
+#### Input directory structure, detailed: 
+The input directory can be in two forms: 
+
+```
+directory_with_alphafold_predictions
+├── ranked_0.pdb
+├── ...  
+├── ...
+├── ranked_24.pdb
+├── unrelaxed_model_1_multimer_v3_pred_1.pdb
+├── ...  
+├── ...
+├── unrelaxed_model_5_multimer_v3_pred_5.pdb
+├── result_model_1_multimer_v3_pred_1.pkl
+├── ...  
+├── ...
+└──result_model_5_multimer_v3_pred_5.pkl
+```
+
+or
+
+```
+directory_with_alphafold_predictions
+├── complex1
+│   ├── ranked_0.pdb
+│   ├── ...
+│   ├── ranked_24.pdb
+│   ├── unrelaxed_model_1_multimer_v3_pred_1.pdb
+│   ├── ...
+│   ├── unrelaxed_model_5_multimer_v3_pred_5.pdb
+│   ├── result_model_1_multimer_v3_pred_1.pkl
+│   ├── ...
+│   └── result_model_5_multimer_v3_pred_5.pkl
+├── complex2
+│   ├── ranked_0.pdb
+│   ├── ...
+│   ├── ranked_24.pdb
+│   ├── unrelaxed_model_1_multimer_v3_pred_1.pdb
+│   ├── ...
+│   ├── unrelaxed_model_5_multimer_v3_pred_5.pdb
+│   ├── result_model_1_multimer_v3_pred_1.pkl
+│   ├── ...
+│   └── result_model_5_multimer_v3_pred_5.pkl
+```
+
+The `run.py` script accepts both of these directory structures. 
+
+#### Flag options: 
+The script will automatically generate an output-folder called `logreg_outputs` in the directory where you run it from. To change the directory use the `--output_dir` flag.
+
+Other optional flags in the script: 
+
+`--foldseek_db` - default is `data/foldseek_database/entirepdb260625` which is the database used for the results in the manuscript. You can change this to another foldseek database or download the default foldseek database by setting the flag to `None`.    
+`--aln_file_dir` - if you have already run several alignments that you would like to use instead of running foldseek again you can set this flag to the directory containing the alignments. The only requirement is that the file names must contain the protein_name so that the script can match the correct proteins to the correct alignment files. This works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.   
+`--aln_file` - If you want to point to specific files instead of an entire directory you can use this argument instead. Again, the protein name must be present in the alignment filename. This also works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.   
+`--experimental_structure` - If you want to use an experimental structure for when running Foldseek you can specify either a directory or specific files. Again, the protein name must be present in the filename of the experimental structure. If no matching structure is found, `ranked_0.pdb` will be used instead.    
+`--no_homology` - If you want to use the logistic regression function without homology, you need to set this flag. If not set, the script will run the function that was fitted with homology information.    
+`--save_all_outputs` - If you set this flag all intermediate outputs will be saved, including results from running USalign, FreeSASA, Foldseek and mmseqs2 (for homology model). This will also save the features that were generated by the script to run the logistic regression function.    
+
+### Example Runs using data in sample_data
+To predict all samples in `sample_data` with homology model and save all intermediate values and features. 
+
+```bash
+python run.py `--pred_dir` sample_data `--save_all_outputs`          
+```
+
+To use logistic regression function without homology:      
+
+```bash
+python run.py --pred_dir sample_data --save_all_outputs --no_homology      
+```
+
+To run one sample with an experimental structure and pre-generated alignment: 
+
+```bash
+python run.py --pred_dir sample_data/7ahf --experimental_structure sample_data/experimental_structures/7ahf-assembly1.cif.gz --aln_file sample_data/example_foldseek_results/7ahf_example_alignment    
+```
+
+The alignment is expected to be with output-format `--format-output query,target,evalue` when running Foldseek with `--alignment-type 1`. 
+
+### Default output: 
+
+If you used the homology model the default output will be saved in  
+The default output `logreg_outputs/logreg_prob_homology.csv` with the columns `query,probability`. The `query` is the protein name and the `probability` column is the predicted probability by the logistic regression function. 
+
+### Save_all_outputs explained: 
+If the `--save_all_outputs` flag is set the following will be saved:
+This can be useful if you need to debug something, want a deeper understanding of the code or if you want to use the outputs of the tools for other tasks. Please make sure to properly cite the tools used. 
+
+```
+logreg_outputs
+├── features_query.csv
+├── freesasa_results_query.out
+├── usalign_results_query.out
+├── logreg_prob_homology.csv
+├── foldseek_related
+│   ├── query_temp.fasta <- used by mmseqs2
+│   ├── foldseek_alignment_query <- resulting foldseek alignment
+│   ├── fseek_mmseqs_duplicates_filtered_with_stoichs_query.csv <- filtered foldseek results
+│   ├── tmp <- directory created by foldseek/mmseqs for storing intermediate values 
+├── separated_chains_tmp
+│   ├── query_unrelaxed_model_1_multimer_v3_pred_1_A.pdb
+│   ├── query_unrelaxed_model_1_multimer_v3_pred_1_B.pdb
+│   ├── ...
+│   ├── query_unrelaxed_model_5_multimer_v3_pred_5_A.pdb
+│   └── query_unrelaxed_model_5_multimer_v3_pred_5_B.pdb
+```
 
 ## Repository Structure 
+
 ```
 alphafold-homodimers
-├── environment.yml
 ├── README.md
 ├── data
+│   ├── README.md
+│   ├── foldseek_database
+│   │   ├── entire_pdb_cache.pkl
+│   │   ├── entirepdb260625
 │   ├── homodimer_pdbids.txt
 │   ├── monomer_pdbids.txt
 │   ├── neg_heterodimer_pdbids.txt
 │   ├── pos_heterodimer_pdbids.txt
-│   ├── README.md
 │   └── shuffled_pos_heterodimers_ids.txt
+├── environment.yml
 ├── logreg_functions
 │   ├── fseek_logreg.joblib
 │   └── nofseek_logreg.joblib
 ├── notebooks
+│   ├── fseek_logreg.joblib
 │   ├── logreg_all_data.ipynb
-│   └── main_figures.ipynb
+│   └── nofseek_logreg.joblib
+├── run.py
+├── sample_data
+│   ├── 5sd6
+│   ├── 7ahf
+│   ├── 8bv7_B
+│   ├── example_foldseek_results
+│   │   └── 7ahf_example_alignment
+│   └── experimental_structures
+│       ├── 5sd6-assembly1.cif.gz
+│       └── 7ahf-assembly1.cif.gz
 ├── src
 │   ├── code_for_getting_freesasa_features.py
 │   ├── make_logreg_features_df.py
+│   ├── minimized_code_snippets_spoc.py
 │   ├── retrieving_spoc_features.py
 │   ├── run_logistic_regression_cv.sh
 │   └── test_cluster_combinations_logistic_regression_cv.py
@@ -48,3 +214,24 @@ alphafold-homodimers
     └── qsproteome
         └── qsproteome_bestpae4con3.tsv
 ```
+
+## Citation
+If you want to cite the manuscript you can use the following bibtex format: 
+
+```bibtex
+@Article{alphafold-homodimers2025,
+  title       = "Reliable identification of homodimers using {AlphaFold}",
+  author      = "Narrowe Danielsson, Sarah and Elofsson, Arne",
+  journal     = "bioRxiv",
+  month       =  nov,
+  year        =  2025,
+}
+```
+
+## Contact
+
+For questions, suggestions, or collaborations, please open an issue on GitHub or contact the authors through the manuscript.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
