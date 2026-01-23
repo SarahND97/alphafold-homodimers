@@ -109,7 +109,7 @@ Other optional flags in the script:
 To predict `5sd6` specific sample in `sample_data` with homology model: 
 
 ```bash
-python run.py --pred_dir sample_data` 
+python run.py --pred_dir sample_data/5sd6
 ```
 
 To predict all samples in `sample_data` with homology model and save all intermediate values and features. 
