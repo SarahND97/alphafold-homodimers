@@ -1,0 +1,9 @@
+
+# Foldseek entire PDB database (download separately)
+data/foldseek_database/entirepdb*
+
+# macOS
+.DS_Store
+
+# python
+**/__pycache__/
