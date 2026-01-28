@@ -80,10 +80,14 @@ def get_structure_info(directory):
 # method for downloading the PDB using Foldseek
 # OBS! Not the same database used in paper 
 def download_foldseek_db(outdir):
-    print("Downloading PDB using Foldseek")
+    print("Downloading PDB using Foldseek, this can take a while")
+    print(f"checking for any old tmp dirs in {outdir}")
+    shutil.rmtree(f"{outdir}/tmp")
     cmd = ["foldseek", "databases", "PDB", f"{outdir}/pdb", f"{outdir}/tmp"]
     _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n')
-    return f"{outdir}/foldseek_related/pdb"
+    print(f"removing tmp dirs in {outdir}")
+    shutil.rmtree(f"{outdir}/tmp")
+    return f"{outdir}/pdb"
 
 # base method for running Foldseek  
 def run_foldseek(outdir, structure, id, database):
@@ -144,7 +148,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pred_dir", required=True, help="Directory containing the AlphaFold2.3 predicted structures, can either be one directory or a directory with several subdirectories")
     ap.add_argument("--output_dir", default=None, help="Prefix for the csvs where the features and scores are saved, will create a dir called logreg_outputs if None (exist_ok)")
-    ap.add_argument("--foldseek_db", default="data/foldseek_database/entirepdb260625", help="Point to foldseek_db to use, if None it will download PDB using Foldseek")
+    ap.add_argument("--foldseek_db", default=None, help="Point to foldseek_db to use, if None it will download the PDB using Foldseek")
     ap.add_argument("--aln_file_dir", default=None, help="If you have already run a Foldseek alignment you can use this argument to point a directory containing the alignments")
     ap.add_argument("--aln_file", default=None, nargs='+', help="If you have already run a Foldseek alignment you can use this argument to point to a specific file or files")
     ap.add_argument("--experimental_structure_dir", default=None, help="If this points to an experimental structure directory then this will be used when running Foldseek, otherwise the highest ranked will be used, the experimental structure is assumed to be named the same as the protein in question")
@@ -205,34 +209,21 @@ def main():
             fseek_empty=False
             # initialize foldseek_database variable
             foldseek_db = args.foldseek_db
-            # check whether a foldseek_db has already been downloaded
-            if args.foldseek_db is None:
-                # download pdb
-                foldseek_db = download_foldseek_db(fseek_outdir)
-
-            # data/foldseek_database/entirepdb260625_ca was too big to push as one file so it was separated into chunks
-            if "entirepdb260625" in foldseek_db and not os.path.isfile("data/foldseek_database/entirepdb260625_ca"):
-                # reassemble
-                base = "data/foldseek_database/entirepdb260625_ca"
-                parts_dir = "data/foldseek_database/split_parts_gz"
-
-                parts = sorted(glob.glob(os.path.join(parts_dir, base + ".gz.part-*")))
-
-                with open(base, "wb") as out:
-                    for p in parts:
-                        print("Reading", p)
-                        with gzip.open(p, "rb") as f:
-                            while True:
-                                chunk = f.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                out.write(chunk)
 
             # make a directory for storing foldseek/mmseqs results
             # will be removed unless save_all_outputs is true
             os.makedirs(f"{out_dir}/foldseek_related", exist_ok=True)
             # set fseek_outdir to created dir
             fseek_outdir = f"{out_dir}/foldseek_related"
+
+            # check whether the default foldseek_db has already been downloaded
+            if os.path.isfile(f"data/foldseek_database/pdb"):
+                foldseek_db = "data/foldseek_database/pdb"
+            elif args.foldseek_db is None:
+                # download pdb
+                foldseek_db = download_foldseek_db("data/foldseek_database")
+           
+
             # check whether user has uploaded an alignment file
             if args.aln_file_dir is not None or args.aln_file is not None:
                 print("Alignment dir/file found, skipping Foldseek")
@@ -297,14 +288,14 @@ def main():
                 # needed when using mmseqs to remove sequences that are too similar from foldseek matches
                 for record in SeqIO.parse(f'{structures[0]}', "pdb-atom"):
                     seq = str(record.seq)
-                    with open(f"{out_dir}foldseek_related/{query}_temp.fasta", 'w') as f:
+                    with open(f"{out_dir}/foldseek_related/{query}_temp.fasta", 'w') as f:
                         f.write(f">{query}\n")
                         f.write(seq)
                     break
 
                 print("Obtaining Foldseek matches to remove using mmseqs2\n")
                 if not os.path.isfile(f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}"):
-                    cmd = ["mmseqs", "easy-search", f"{out_dir}/foldseek_related/{query}_temp.fasta", foldseek_db, f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}", f"{out_dir}foldseek_related/tmp", "--format-output", "query,target,fident"]
+                    cmd = ["mmseqs", "easy-search", f"{out_dir}/foldseek_related/{query}_temp.fasta", foldseek_db, f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}", f"{out_dir}/foldseek_related/tmp", "--format-output", "query,target,fident"]
                     _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n') #subprocess.run(cmd, check=True)
                 mmseqs_results = pd.read_table(f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}", header=None) 
                 
