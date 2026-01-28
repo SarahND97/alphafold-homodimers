@@ -80,13 +80,12 @@ def get_structure_info(directory):
 # method for downloading the PDB using Foldseek
 # OBS! Not the same database used in paper 
 def download_foldseek_db(outdir):
-    print("Downloading PDB using Foldseek, this can take a while")
     print(f"checking for any old tmp dirs in {outdir}")
-    shutil.rmtree(f"{outdir}/tmp")
+    print("Downloading PDB using Foldseek, this can take a while")
+    if os.path.isdir(f"{outdir}/tmp"):
+        shutil.rmtree(f"{outdir}/tmp")
     cmd = ["foldseek", "databases", "PDB", f"{outdir}/pdb", f"{outdir}/tmp"]
     _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n')
-    print(f"removing tmp dirs in {outdir}")
-    shutil.rmtree(f"{outdir}/tmp")
     return f"{outdir}/pdb"
 
 # base method for running Foldseek  
