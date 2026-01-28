@@ -1,2 +1,0 @@
-data/foldseek_database/entirepdb260625* filter=lfs diff=lfs merge=lfs -text
-data/foldseek_database/entirepdb260625_ss filter=lfs diff=lfs merge=lfs -text
