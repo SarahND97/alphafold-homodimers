@@ -86,6 +86,8 @@ def download_foldseek_db(outdir):
         shutil.rmtree(f"{outdir}/tmp")
     cmd = ["foldseek", "databases", "PDB", f"{outdir}/pdb", f"{outdir}/tmp"]
     _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n')
+    print(f"removing tmp dirs in {outdir}")
+    shutil.rmtree(f"{outdir}/tmp")
     return f"{outdir}/pdb"
 
 # base method for running Foldseek  
