@@ -97,7 +97,7 @@ The script will automatically generate an output-folder called `logreg_outputs` 
 
 Other optional flags in the script: 
 
-`--foldseek_db` - default is `data/foldseek_database/entirepdb260625` which is the database used for the results in the manuscript. You can change this to another foldseek database or download the default foldseek database by setting the flag to `None`.    
+`--foldseek_db` - this is to default is `None` by default and will then download the pdb using Foldseek to `data/foldseek_database/`. If you want to use a different Foldseek database that you have previously downloaded you can use this flag.    
 `--aln_file_dir` - If you have already run several alignments that you would like to use instead of running foldseek again you can set this flag to the directory containing the alignments. The only requirement is that the file names must contain the protein_name so that the script can match the correct proteins to the correct alignment files. This works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.   
 `--aln_file` - If you want to point to specific files instead of an entire directory you can use this argument instead. Again, the protein name must be present in the alignment filename. This also works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.     
 `--experimental_structure_dir` - If you have a directory with experimental structures you can use this flag and specify the location.             
@@ -169,7 +169,6 @@ alphafold-homodimers
 │   ├── README.md
 │   ├── foldseek_database
 │   │   ├── entire_pdb_cache.pkl
-│   │   ├── entirepdb260625
 │   ├── homodimer_pdbids.txt
 │   ├── monomer_pdbids.txt
 │   ├── neg_heterodimer_pdbids.txt
