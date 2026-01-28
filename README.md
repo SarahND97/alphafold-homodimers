@@ -97,7 +97,7 @@ The script will automatically generate an output-folder called `logreg_outputs` 
 
 Other optional flags in the script: 
 
-`--foldseek_db` - this is to default is `None` by default and will then download the pdb using Foldseek to `data/foldseek_database/`. If you want to use a different Foldseek database that you have previously downloaded you can use this flag.    
+`--foldseek_db` - this is set to `None` by default and will then download the pdb using Foldseek to `data/foldseek_database/`. It will only do this once. If you want to use a different Foldseek database that you have previously downloaded you can use this flag.    
 `--aln_file_dir` - If you have already run several alignments that you would like to use instead of running foldseek again you can set this flag to the directory containing the alignments. The only requirement is that the file names must contain the protein_name so that the script can match the correct proteins to the correct alignment files. This works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.   
 `--aln_file` - If you want to point to specific files instead of an entire directory you can use this argument instead. Again, the protein name must be present in the alignment filename. This also works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.     
 `--experimental_structure_dir` - If you have a directory with experimental structures you can use this flag and specify the location.             
@@ -107,10 +107,10 @@ Other optional flags in the script:
 
 ### Example Runs using data in sample_data
 
-To predict `5sd6` specific sample in `sample_data` with homology model: 
+To predict `7ahf` specific sample in `sample_data` with homology model: 
 
 ```bash
-python run.py --pred_dir sample_data/5sd6
+python run.py --pred_dir sample_data/7ahf
 ```
 
 To predict all samples in `sample_data` with homology model and save all intermediate values and features. 
@@ -182,13 +182,11 @@ alphafold-homodimers
 │   └── logreg_all_data.ipynb
 ├── run.py
 ├── sample_data
-│   ├── 5sd6
 │   ├── 7ahf
 │   ├── 8bv7_B
 │   ├── example_foldseek_results
 │   │   └── 7ahf_example_alignment
 │   └── experimental_structures
-│       ├── 5sd6-assembly1.cif.gz
 │       └── 7ahf-assembly1.cif.gz
 ├── src
 │   ├── code_for_getting_freesasa_features.py
