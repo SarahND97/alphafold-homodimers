@@ -8,3 +8,6 @@ data/foldseek_database/pdb*
 
 # python
 **/__pycache__/
+
+# Large sample dataset (download separately)
+sample_data/5sd6/
