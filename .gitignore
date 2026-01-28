@@ -1,6 +1,7 @@
 
 # Foldseek entire PDB database (download separately)
 data/foldseek_database/entirepdb*
+data/foldseek_database/pdb*
 
 # macOS
 .DS_Store
