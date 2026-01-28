@@ -54,13 +54,13 @@ def get_structure_info(directory):
     dir = directory
     id = dir.split("/")[-1]
     structures = glob.glob(f"{dir}/unrelaxed*model*.pdb")
+    if len(structures)==0:
+        print(f"No predicted structures found in {directory}")
+        return None,None,None,None
     if len(structures)!=25:
         print("OBS!!! Note that this logistic regression function was fitted using 25 predicted models!")
         print(f"Found {len(structures)} models")
         print("Proceed with caution")
-    if len(structures)==0:
-        print(f"No predicted structures found in {directory}")
-        return None,None,None,None
     if len(structures)==1:
         print(f"Only one predicted structure found in {directory}, need at least two")
         return None,None,None,None
