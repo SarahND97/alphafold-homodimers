@@ -4,6 +4,9 @@ The data available in this repository are the pdbids.
 The msas, predicted_models, input_jsons for alphafold3 are found in the following Zenodo repo: https://zenodo.org/records/17738668
 
 ## Explanation of files: 
+
+The directory `/ids_v1` contains the ids used in the first version of the manuscript and contains the following files: 
+
 `homodimer_pdbids.txt` - Positive homodimers
 
 `monomer_pdbids.txt` - Monomers, used as negatives for the homodimers
