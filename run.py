@@ -3,82 +3,116 @@
 Code for retrieving required features and running logistic regression functions
 Author: @sarahnd97 (Sarah Narrowe Danielsson)
 
-Input: directory containing at least two (preferebly 25) alphafold predictions
+Input: directory containing at least two (preferably 5) alphafold predictions
 Output: csv with the probabilities for each query
 Note: see flags for more specific options
+
+Extracts the same features used to train the released logistic-regression
+models (logreg_functions/lr_with_homology.joblib, lr_without_homology.joblib),
+computing only what each model actually needs. Uses src/spoc_analysis.py for
+SPOC interface contact-parsing and src/ipsae.py (Dunbrack et al.) directly;
+everything else is done in this file.
 
 from the manuscript: Reliable Identification Of Homodimers using AlphaFold by
 Sarah Narrowe Danielsson and Arne Elofsson
 If you use the script in your research please cite the following manuscripts:
-the alphafold2 and alphafold2.3 manuscripts
+the alphafold2 and alphafold-multimer manuscripts
 Foldseek and MMseqs2 manuscripts
 FreeSASA and USAlign manuscripts
+ipSAE (Dunbrack)
 """
 import argparse
 import glob
-import gzip
-import os 
+import pickle
+import re
+import os
 import shutil
 import subprocess
-import tqdm
-import pandas as pd
-import numpy as np
-import joblib
+import sys
+import tempfile
 import time
 import warnings
-import requests
+from pathlib import Path
+import joblib
+import pandas as pd
+import tqdm
 from Bio import SeqIO, BiopythonParserWarning
-from src.minimized_code_snippets_spoc import analyze_complex
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# analyze_spoc is kept in its own module since it's a direct adaptation of
+# SPOC's low-level PDB/PAE contact-parsing code (see src/spoc_analysis.py),
+# the same way the original script imported analyze_complex from
+# src/minimized_code_snippets_spoc.py. Everything else needed to run the
+# shipped logistic-regression models is done directly in this file below.
+from src.spoc_analysis import analyze_spoc
 
 warnings.filterwarnings("ignore", category=BiopythonParserWarning)
 
-# method for flattening and normalizing feature names for logistic regression algorithm
-def normalize_feature_list(feature_list):
-    flat_features = []
-    for f in feature_list:
-        if isinstance(f, (list, tuple, np.ndarray)):
-            for g in f:
-                if isinstance(g, tuple) and len(g) == 1:
-                    flat_features.append(g[0])
-                else:
-                    flat_features.append(g)
-        else:
-            flat_features.append(f)
+REPO_ROOT = Path(__file__).resolve().parent
+IPSAE_SCRIPT = REPO_ROOT / "src" / "ipsae.py"
+PAE_CUTOFF = 10.0
+DIST_CUTOFF = 10.0
 
-    norm_features = [str(x) for x in flat_features]
+# filename patterns for pairing up each prediction's .pdb with its .pkl
+_PKL_RE = re.compile(r"result_model_(\d+)_multimer_v3_pred_(\d+)\.pkl$")
+_PDB_RE = re.compile(r"unrelaxed_model_(\d+)_multimer_v3_pred_(\d+)\.pdb$")
 
-    return norm_features
+# freesasa's plain-text output fields we need to parse
+_FSASA_TOTAL = re.compile(r"Total\s*:\s*([\d.]+)")
+_FSASA_POLAR = re.compile(r"Polar\s*:\s*([\d.]+)")
+_FSASA_CHAIN = re.compile(r"CHAIN\s+(.+?)\s*:\s*([\d.]+)")
 
-# method for retrieving the relevant .pkl-files and structures
+# Thresholds actually used by the shipped models: multimer_frac_tm{0.0,0.1,0.3}
+# and hm_frac_tm0.2 are raw features of the with-homology model; the 0.8
+# thresholds are needed for the foldseek_specificity derived feature.
+MULTIMER_FRAC_THRESHOLDS = [0.0, 0.1, 0.3, 0.8]
+HM_FRAC_THRESHOLDS = [0.2, 0.8]
+ALL_FRAC_THRESHOLDS = sorted(set(MULTIMER_FRAC_THRESHOLDS) | set(HM_FRAC_THRESHOLDS))
+
+# method for finding all matched (pdb_path, pkl_path) pairs in a complex
+# directory, matched by (model_number, prediction_number) rather than just
+# globbing, since a directory can contain unpaired leftover files
+def discover_pairs(complex_dir):
+    pkl_map = {}
+    pdb_map = {}
+    for f in complex_dir.iterdir():
+        m = _PKL_RE.match(f.name)
+        if m:
+            pkl_map[(int(m.group(1)), int(m.group(2)))] = str(f)
+            continue
+        m = _PDB_RE.match(f.name)
+        if m:
+            pdb_map[(int(m.group(1)), int(m.group(2)))] = str(f)
+
+    common = sorted(set(pkl_map) & set(pdb_map))
+    return [(pdb_map[k], pkl_map[k]) for k in common]
+
+
+# method for retrieving the relevant .pkl-files and structures, properly
+# paired by (model, pred) number (see discover_pairs above)
 def get_structure_info(directory):
     dir = directory
-    id = dir.split("/")[-1]
-    structures = glob.glob(f"{dir}/unrelaxed*model*.pdb")
-    if len(structures)==0:
+    id = Path(dir).name
+    pairs = discover_pairs(Path(dir))
+    if len(pairs) == 0:
         print(f"No predicted structures found in {directory}")
-        return None,None,None,None
-    if len(structures)!=25:
-        print("OBS!!! Note that this logistic regression function was fitted using 25 predicted models!")
-        print(f"Found {len(structures)} models")
+        return None, None, None, None, None
+    if len(pairs) < 5:
+        print("OBS!!! Note that this logistic regression functions was fitted using 5 predicted models!")
+        print(f"Found {len(pairs)} models")
         print("Proceed with caution")
-    if len(structures)==1:
-        print(f"Only one predicted structure found in {directory}, need at least two")
-        return None,None,None,None
+    if len(pairs) < 2:
+        print(f"Only {len(pairs)} predicted structure(s) found in {directory}, need at least two")
+        return None, None, None, None, None
     ranked_0 = glob.glob(f"{dir}/*ranked_0*.pdb")
-    if len(ranked_0)==0:
-        print(f"No model named with ranked_0 in name in {directory}")
-        return None,None,None,None
-    ranked_0 = ranked_0[0]
+    ranked_0 = ranked_0[0] if ranked_0 else None
+    structures = [p for p, _ in pairs]
+    pkl_files = [k for _, k in pairs]
 
-    pkl_files = glob.glob(f"{dir}/*result_model*.pkl")
-    if len(pkl_files)==0:
-        print(f"No *result_model* .pkl-files found in {directory}")
-        return None,None,None,None
-
-    return structures,ranked_0,pkl_files,id
+    return structures, ranked_0, pkl_files, id, pairs
 
 # method for downloading the PDB using Foldseek
-# OBS! Not the same database used in paper 
+# OBS! Not the same database used in paper
 def download_foldseek_db(outdir):
     print(f"checking for any old tmp dirs in {outdir}")
     print("Downloading PDB using Foldseek, this can take a while")
@@ -90,60 +124,214 @@ def download_foldseek_db(outdir):
     shutil.rmtree(f"{outdir}/tmp")
     return f"{outdir}/pdb"
 
-# base method for running Foldseek  
+# base method for running Foldseek
 def run_foldseek(outdir, structure, id, database):
     print(f"Running Foldseek with {database}, this can take a few minutes")
 
     alignment = f"{outdir}/foldseek_alignment_{id}"
     cmd = ["foldseek", "easy-search", structure, database, alignment, f"{outdir}/tmp", "--alignment-type", "1", "--format-output", "query,target,evalue"]
-    _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n') #subprocess.run(cmd, check=True)
-    
+    _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n')
+
     # check wether alignment is empty
     if os.stat(alignment).st_size != 0:
         # foldseek alignment is not empty
         fseek_results = pd.read_table(alignment, keep_default_na=False, header=None)
         return fseek_results, False
-    else: 
+    else:
         # foldseek alignment is empty
         return [], True
 
-# Method for calculating needed homology fractions
+
+# method for loading the bioassembly cache with precalculated stoichiometries
+# for the entire PDB, kept alongside whichever foldseek_db is in use
+def load_stoich_cache(foldseek_db):
+    cache = Path(foldseek_db).parent / "entire_pdb_cache.pkl"
+    if not cache.exists():
+        raise FileNotFoundError(f"Stoichiometry cache not found: {cache}")
+    with open(cache, "rb") as fh:
+        return pickle.load(fh)
+
+# Method for calculating needed homology fractions.
+# Weighting: each unique target PDB code (assembly1/assembly2 variants,
+# chain A/B variants of the same assembly) contributes equally regardless of
+# how many hits it produced — matches src/extract_features.py's
+# compute_foldseek_features, restricted to the specific thresholds the
+# shipped with-homology model (and its foldseek_specificity derived feature)
+# actually need, instead of the old flat hit-count ratio.
 def get_homology_fractions(fseek_results, features, num_dir):
-    # # only keep entries above certain evalue (TM score) thresholds
-    fseek_above_06 = fseek_results[fseek_results["evalue"]>0.6]
-    fseek_above_08 = fseek_results[fseek_results["evalue"]>0.8]
-    fseek_above_09 = fseek_results[fseek_results["evalue"]>0.9]
-    
-    # calculate homomultimer and multimer fractions 
-    # get homomutlimer fraction by creating a new dataframe with only those entries kept
-    fseek_above_09_homomulti = fseek_above_09[fseek_above_09["stoichiometry"]=="homomultimer"]
-    # update features dictionary, use same names as logreg-features, account for possible division by zero
-    try:
-        features[num_dir]["hm_frac_tm0.9"] = round(fseek_above_09_homomulti.shape[0]/fseek_above_09.shape[0],4)
-    except ZeroDivisionError:
-        features[num_dir]["hm_frac_tm0.9"] = 0.0000
-    
-    # repeat for other fractions
-    fseek_above_08_multi = fseek_above_08[fseek_above_08["stoichiometry"]!="monomer"]
-    fseek_above_08_homomulti = fseek_above_08[fseek_above_08["stoichiometry"]=="homomultimer"]
-    fseek_above_06_multi = fseek_above_06[fseek_above_06["stoichiometry"]!="monomer"]
-    
-    try: 
-        features[num_dir]["hm_frac_tm0.8"] = round(fseek_above_08_homomulti.shape[0]/fseek_above_08.shape[0],4)
-    except ZeroDivisionError:
-        features[num_dir]["hm_frac_tm0.8"] = 0.0000
-
-    try:
-        features[num_dir]["multimer_frac_tm0.8"] = round(fseek_above_08_multi.shape[0]/fseek_above_08.shape[0],4)
-    except ZeroDivisionError:
-        features[num_dir]["multimer_frac_tm0.8"] = 0.0000
-
-    try:
-        features[num_dir]["multimer_frac_tm0.6"] = round(fseek_above_06_multi.shape[0]/fseek_above_06.shape[0],4)
-    except ZeroDivisionError:
-        features[num_dir]["multimer_frac_tm0.6"] = 0.0000
+    known = fseek_results[fseek_results["stoichiometry"] != "unknown"]
+    for t in ALL_FRAC_THRESHOLDS:
+        above = known[known["evalue"] > t]
+        if above.empty:
+            multimer_frac, hm_frac = 0.0, 0.0
+        else:
+            pdb_groups = above.groupby("pdb_code")["stoichiometry"].apply(list)
+            n_pdbs = len(pdb_groups)
+            multimer_sum = sum(sum(1 for s in rows if s != "monomer") / len(rows) for rows in pdb_groups)
+            hm_sum = sum(sum(1 for s in rows if s == "homomultimer") / len(rows) for rows in pdb_groups)
+            multimer_frac = round(multimer_sum / n_pdbs, 4)
+            hm_frac = round(hm_sum / n_pdbs, 4)
+        if t in MULTIMER_FRAC_THRESHOLDS:
+            features[num_dir][f"multimer_frac_tm{t}"] = multimer_frac
+        if t in HM_FRAC_THRESHOLDS:
+            features[num_dir][f"hm_frac_tm{t}"] = hm_frac
 
     return features
+
+
+# Method for running the USalign structural-consensus comparison across all
+# predicted structures. Shared by both models (both need structural_consensus_max,
+# the with-homology model additionally needs mean/min).
+def get_structural_consensus(structures, query, out_dir, save_all_outputs):
+    combos_tried = []
+    tm1s = []
+    tm2s = []
+    for structure1 in tqdm.tqdm(structures):
+        for structure2 in structures:
+            if structure1 != structure2 and ((structure1 + structure2) not in combos_tried) and ((structure2 + structure1) not in combos_tried):
+                cmd = ["USalign", structure1, structure2, "-mm", "1"]
+                align_out = subprocess.check_output(cmd).decode('utf-8')
+                align_output = align_out.strip().split('\n')
+                if save_all_outputs:
+                    struct_desc1 = structure1.split("/")[-1].split(".")[0]
+                    struct_desc2 = structure2.split("/")[-1].split(".")[0]
+                    with open(f"{out_dir}/usalign_results_{query}.out", "a+") as f:
+                        f.write(f"Align output for {struct_desc1} vs {struct_desc2}\n")
+                        f.write(align_out)
+                        f.write("\n")
+                temp_split_1 = align_output[14].split(" ")
+                temp_split_2 = align_output[15].split(" ")
+                tm1s.append(float(temp_split_1[1]))
+                tm2s.append(float(temp_split_2[1]))
+                combos_tried.append(structure1 + structure2)
+                combos_tried.append(structure2 + structure1)
+
+    if tm1s != tm2s:
+        print("One or more values of tm are different")
+        print("proceed with caution")
+
+    return round(sum(tm1s) / len(tm1s), 6), round(min(tm1s), 6), round(max(tm1s), 6)
+
+# method for aggregating the AlphaFold confidence scalars (iptm, ptm,
+# ranking_confidence) across all of a query's predicted models
+def aggregate_af_scalars(pkl_files):
+    iptm_vals, ptm_vals, rc_vals = [], [], []
+    for pkl_path in pkl_files:
+        with open(pkl_path, "rb") as fh:
+            data = pickle.load(fh)
+        iptm_vals.append(float(data["iptm"]))
+        ptm_vals.append(float(data["ptm"]))
+        rc_vals.append(float(data["ranking_confidence"]))
+    return {
+        "max_iptm": max(iptm_vals), "min_iptm": min(iptm_vals), "avg_iptm": sum(iptm_vals) / len(iptm_vals),
+        "max_ptm": max(ptm_vals), "min_ptm": min(ptm_vals), "avg_ptm": sum(ptm_vals) / len(ptm_vals),
+        "max_rc": max(rc_vals), "min_rc": min(rc_vals), "avg_rc": sum(rc_vals) / len(rc_vals),
+    }
+
+
+# method for running freesasa on a single structure, returning its total and
+# polar exposed area plus the two chain names, or None if freesasa fails
+def run_freesasa(pdb_path):
+    try:
+        out = subprocess.check_output(["freesasa", pdb_path]).decode('utf-8')
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    total = _FSASA_TOTAL.search(out)
+    polar = _FSASA_POLAR.search(out)
+    chains = [m.group(1) for m in _FSASA_CHAIN.finditer(out)]
+    if not total or not polar:
+        return None
+    return {"total": float(total.group(1)), "polar": float(polar.group(1)), "chains": chains}
+
+
+# method for separating and saving a single chain of a complex
+def save_chain(full, chain, out):
+    with open(full) as fi, open(out, "w") as fo:
+        for ln in fi:
+            if ln.startswith(("ATOM", "HETATM")) and ln[21:22].strip() == chain:
+                fo.write(ln)
+        fo.write("END\n")
+
+
+# method for computing total_interaction_area_max and
+# fraction_buried_polar_area_min (the only FreeSASA-derived features the
+# no-homology model needs) across all of a query's predicted models
+def compute_freesasa(structures, query, out_dir, save_all_outputs):
+    os.makedirs(f"{out_dir}/separated_chains_tmp", exist_ok=True)
+
+    total_interaction_areas = []
+    fraction_buried_polar_areas = []
+    for structure in tqdm.tqdm(structures):
+        full = run_freesasa(structure)
+        if full is None or len(full["chains"]) < 2:
+            continue
+
+        chain1, chain2 = full["chains"][:2]
+        specific_model = f"{query}_{structure.split('/')[-1].split('.')[0]}"
+        chain1_pdb = f"{out_dir}/separated_chains_tmp/{specific_model}_{chain1}.pdb"
+        chain2_pdb = f"{out_dir}/separated_chains_tmp/{specific_model}_{chain2}.pdb"
+        save_chain(structure, chain1, chain1_pdb)
+        save_chain(structure, chain2, chain2_pdb)
+
+        s1 = run_freesasa(chain1_pdb)
+        s2 = run_freesasa(chain2_pdb)
+        if s1 is None or s2 is None:
+            continue
+
+        total_interaction_area = (s1["total"] + s2["total"]) - full["total"]
+        polar_interaction_area = (s1["polar"] + s2["polar"]) - full["polar"]
+        total_interaction_areas.append(total_interaction_area)
+        if total_interaction_area > 0:
+            fraction_buried_polar_areas.append(polar_interaction_area / total_interaction_area)
+
+    if not save_all_outputs:
+        shutil.rmtree(f"{out_dir}/separated_chains_tmp/")
+
+    return {
+        "total_interaction_area_max": max(total_interaction_areas) if total_interaction_areas else float("nan"),
+        "fraction_buried_polar_area_min": min(fraction_buried_polar_areas) if fraction_buried_polar_areas else float("nan"),
+    }
+
+# method for running src/ipsae.py (Dunbrack et al.) on a single (pdb, pkl)
+# prediction pair, returning its ipSAE score
+def run_ipsae_for_model(pdb, pkl, pae_cutoff, dist_cutoff):
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        tmp_pdb = tmpdir / Path(pdb).name
+        tmp_pkl = tmpdir / Path(pkl).name
+        tmp_pdb.symlink_to(Path(pdb).resolve())
+        tmp_pkl.symlink_to(Path(pkl).resolve())
+
+        result = subprocess.run(
+            [sys.executable, str(IPSAE_SCRIPT), str(tmp_pkl), str(tmp_pdb), str(pae_cutoff), str(dist_cutoff)],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode().strip())
+
+        pae_str, dist_str = str(int(pae_cutoff)).zfill(2), str(int(dist_cutoff)).zfill(2)
+        txt_path = Path(str(tmp_pdb).replace(".pdb", f"_{pae_str}_{dist_str}") + ".txt")
+        with open(txt_path) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 6 and parts[4] == "max":
+                    return float(parts[5])
+        raise ValueError(f"No 'max' row found in {txt_path}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# method for computing avg_ipsae (the only ipSAE-derived feature the
+# with-homology model needs) across all of a query's predicted models
+def compute_avg_ipsae(pairs, pae_cutoff, dist_cutoff):
+    vals = []
+    for pdb_path, pkl_path in pairs:
+        try:
+            vals.append(run_ipsae_for_model(pdb_path, pkl_path, pae_cutoff, dist_cutoff))
+        except Exception as exc:
+            print(f"  WARNING: ipsae failed for {Path(pdb_path).name}: {exc}")
+    return round(sum(vals) / len(vals), 6) if vals else float("nan")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -164,30 +352,28 @@ def main():
         out_dir = "logreg_outputs"
     else:
         out_dir = args.output_dir
+        os.makedirs(out_dir, exist_ok=True)
 
-    # check whether the pred_dir is just one structure directory or 
+    # check whether the pred_dir is just one structure directory or
     # whether it points to multiple sub-directories
     content = glob.glob(f"{args.pred_dir}/*")
     for file in content:
         if ".pdb" in file:
-            # one_prediction = True
             content = [args.pred_dir]
             break
 
     # retrieve logistic regression functions
-    function_dir = "logreg_functions" # specify where the files are located
+    function_dir = str(REPO_ROOT / "logreg_functions")
     if not args.no_homology:
         print("Loading homology logreg function")
-        homology_bundle = joblib.load(function_dir+"/fseek_logreg.joblib")
-        homology_model = homology_bundle["model"]
+        homology_bundle = joblib.load(function_dir + "/lr_with_homology.joblib")
+        homology_pipeline = homology_bundle["pipeline"]
         homology_feats_order = homology_bundle["features"]
-        homology_feats_norm = normalize_feature_list(homology_feats_order)
     else:
         print("Loading no homology logreg function")
-        no_homology_bundle = joblib.load(function_dir+"/nofseek_logreg.joblib")
-        no_homology_model = no_homology_bundle["model"]
+        no_homology_bundle = joblib.load(function_dir + "/lr_without_homology.joblib")
+        no_homology_pipeline = no_homology_bundle["pipeline"]
         no_homology_feats_order = no_homology_bundle["features"]
-        no_homology_feats_norm = normalize_feature_list(no_homology_feats_order)
 
     # list for saving query_names
     queries = []
@@ -198,7 +384,7 @@ def main():
 
     # go through the content of pred_dir
     for num_dir, dir in enumerate(content):
-        structures, ranked_0, pkl_files,query = get_structure_info(dir)
+        structures, ranked_0, pkl_files, query, pairs = get_structure_info(dir)
         if structures is None:
             continue
         queries.append(query)
@@ -207,7 +393,7 @@ def main():
 
         if not args.no_homology:
             # initialize for checking empty foldseek results
-            fseek_empty=False
+            fseek_empty = False
             # initialize foldseek_database variable
             foldseek_db = args.foldseek_db
 
@@ -218,43 +404,52 @@ def main():
             fseek_outdir = f"{out_dir}/foldseek_related"
 
             # check whether the default foldseek_db has already been downloaded
-            if os.path.isfile(f"data/foldseek_database/pdb"):
-                foldseek_db = "data/foldseek_database/pdb"
+            if os.path.isfile(f"{REPO_ROOT}/data/foldseek_database/pdb"):
+                foldseek_db = f"{REPO_ROOT}/data/foldseek_database/pdb"
             elif args.foldseek_db is None:
                 # download pdb
-                foldseek_db = download_foldseek_db("data/foldseek_database")
-           
+                foldseek_db = download_foldseek_db(f"{REPO_ROOT}/data/foldseek_database")
 
             # check whether user has uploaded an alignment file
             if args.aln_file_dir is not None or args.aln_file is not None:
                 print("Alignment dir/file found, skipping Foldseek")
+                # None means "no matching file found" — Foldseek is run as a
+                # fallback right away, in which case fseek_results/fseek_empty
+                # are already set and must NOT be overwritten below.
+                alignment_file = None
                 if args.aln_file_dir:
-                    alignment_file = glob.glob(f"{args.aln_file_dir}/*{query}*")
-                    if len(alignment_file)>1:
-                            print(f"more than one corresponding alignment file found for {query} use --aln_file to specify")
-                            print(f"Using {alignment_file[0]}")
-                            alignment_file = alignment_file[0]
-                    elif len(alignment_file)==0:
+                    matches = glob.glob(f"{args.aln_file_dir}/*{query}*")
+                    if len(matches) > 1:
+                        print(f"more than one corresponding alignment file found for {query} use --aln_file to specify")
+                        print(f"Using {matches[0]}")
+                        alignment_file = matches[0]
+                    elif len(matches) == 1:
+                        alignment_file = matches[0]
+                    else:
                         print("No alignment file found in dir")
                         print("Running foldseek using ranked_0")
-                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0, query, foldseek_db)
+                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0 or structures[0], query, foldseek_db)
                 else:
                     # user has inputted specific alignment files
                     alignment_files = args.aln_file
-                    alignment_file = ""
-                    # check that query appears in file 
-                    for a_file in alignment_files:                        
+                    # check that query appears in file
+                    for a_file in alignment_files:
                         if query in a_file:
                             alignment_file = a_file
-                    if alignment_file=="":
+                    if alignment_file is None:
                         print(f"no corresponding alignment file found in --align_file,{query} needs to be present in the filename")
                         print("using ranked_0 to create alignment")
-                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0, query, foldseek_db)
-                # check whether the alignment-file is empty
-                if os.stat(alignment_file).st_size != 0:
-                    fseek_results = pd.read_table(alignment_file, keep_default_na=False)
-                else: 
-                    fseek_empty=True  
+                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0 or structures[0], query, foldseek_db)
+                # check whether the alignment-file is empty (only when we
+                # actually found one above, rather than already having run
+                # Foldseek as a fallback)
+                if alignment_file is not None:
+                    if os.stat(alignment_file).st_size != 0:
+                        # Foldseek's own --format-output files have no header row.
+                        fseek_results = pd.read_table(alignment_file, keep_default_na=False, header=None)
+                        fseek_empty = False
+                    else:
+                        fseek_empty = True
             else:
                 # check whether user wants to use an experimental structure as a reference
                 # if none can be found then used the highest ranked insead
@@ -262,27 +457,40 @@ def main():
                     print("Running Foldseek with experimental structure")
                     # look for structures in dir that contain the query name
                     experimental_structure = glob.glob(f"{args.experimental_structure_dir}/*{query}*")
-                    if len(experimental_structure)==1:
+                    if len(experimental_structure) == 1:
                         fseek_results, fseek_empty = run_foldseek(fseek_outdir, experimental_structure[0], query, foldseek_db)
-                    elif len(experimental_structure)>1:
+                    elif len(experimental_structure) > 1:
                         print(f"more than one corresponding experimental structure found for {query}")
                         print("Using ranked_0 instead")
-                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0, query, foldseek_db)
-                    elif len(experimental_structure)==0:
+                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0 or structures[0], query, foldseek_db)
+                    else:
                         print(f"no corresponding experimental structure found for {query}")
                         print("Using ranked_0 instead")
-                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0, query, foldseek_db)
+                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0 or structures[0], query, foldseek_db)
+                elif args.experimental_structure is not None:
+                    experimental_structure = ""
+                    for a_file in args.experimental_structure:
+                        if query in a_file:
+                            experimental_structure = a_file
+                    if experimental_structure == "":
+                        print(f"no --experimental_structure entry matches {query}, using ranked_0 instead")
+                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0 or structures[0], query, foldseek_db)
+                    else:
+                        print("Running Foldseek with experimental structure")
+                        fseek_results, fseek_empty = run_foldseek(fseek_outdir, experimental_structure, query, foldseek_db)
                 else:
-                    fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0, query, foldseek_db)
-                          
+                    fseek_results, fseek_empty = run_foldseek(fseek_outdir, ranked_0 or structures[0], query, foldseek_db)
+
             if fseek_empty:
-                print("No foldseek results, setting all homology information to 0")
-                features[num_dir]["hm_frac_tm0.9"] = 0.0
-                features[num_dir]["hm_frac_tm0.8"] = 0.0
-                features[num_dir]["multimer_frac_tm0.8"] = 0.0
-                features[num_dir]["multimer_frac_tm0.6"] = 0.0
+                # Matches extract_features_script/impute_missing_foldseek.py:
+                # missing/failed Foldseek data is imputed to -1.0 (not 0.0),
+                # to distinguish it from a genuine zero-fraction result.
+                print("No foldseek results, imputing all homology information to -1.0")
+                for t in MULTIMER_FRAC_THRESHOLDS:
+                    features[num_dir][f"multimer_frac_tm{t}"] = -1.0
+                for t in HM_FRAC_THRESHOLDS:
+                    features[num_dir][f"hm_frac_tm{t}"] = -1.0
                 if not args.save_all_outputs:
-                    # remove foldseek folder 
                     shutil.rmtree(f"{out_dir}/foldseek_related/")
             else:
                 # save sequence as a .fasta-file
@@ -291,28 +499,28 @@ def main():
                     seq = str(record.seq)
                     with open(f"{out_dir}/foldseek_related/{query}_temp.fasta", 'w') as f:
                         f.write(f">{query}\n")
-                        f.write(seq)
+                        f.write(F"{seq}\n")
                     break
 
                 print("Obtaining Foldseek matches to remove using mmseqs2\n")
                 if not os.path.isfile(f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}"):
                     cmd = ["mmseqs", "easy-search", f"{out_dir}/foldseek_related/{query}_temp.fasta", foldseek_db, f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}", f"{out_dir}/foldseek_related/tmp", "--format-output", "query,target,fident"]
-                    _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n') #subprocess.run(cmd, check=True)
-                mmseqs_results = pd.read_table(f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}", header=None) 
-                
+                    _ = subprocess.check_output(cmd).decode('utf-8').strip().split('\n')
+                mmseqs_results = pd.read_table(f"{out_dir}/foldseek_related/temp_mmseqs_aln_{query}", header=None)
+
                 if not args.save_all_outputs:
-                    # remove both foldseek and mmseqs results and 
                     shutil.rmtree(f"{out_dir}/foldseek_related/")
 
-                mmseqs_results.columns = ["query","target","fident"]
+                mmseqs_results.columns = ["query", "target", "fident"]
                 mmseqs_results.reset_index()
-                mmseqs_results = mmseqs_results[mmseqs_results["fident"]>0.5]
+                mmseqs_results = mmseqs_results[mmseqs_results["fident"] > 0.5]
                 mmseqs_filter = mmseqs_results["target"].to_list()
                 # assign column names to fseek_results
-                fseek_results.columns = ["query","target","evalue"]
-            
-                # add new empty column
+                fseek_results.columns = ["query", "target", "evalue"]
+
+                # add new empty columns
                 fseek_results["stoichiometry"] = pd.Series(dtype='str')
+                fseek_results["pdb_code"] = pd.Series(dtype='str')
 
                 # reset index to ensure that rows and index match
                 fseek_results = fseek_results.reset_index()
@@ -321,251 +529,167 @@ def main():
                 rows_to_remove = fseek_results[fseek_results["target"].isin(mmseqs_filter)]
                 fseek_results = fseek_results.drop(index=rows_to_remove.index)
 
-                # download bioassembly cache with precalculated stoichiometries for entire PDB (updated 2nd January 2026)
-                stoich_data = pd.read_pickle("data/foldseek_database/entire_pdb_cache.pkl") 
-                
-                # use the stoichiometry cache and assign a stoichiometry to the hits in the foldseek-file
-                to_drop = []
-                for index, row in fseek_results.iterrows():
-                    target = row["target"].split("_")[0]
-                    # change all homodimer/homomultimer to homomultimer only
-                    target_id = target.split("-")[0]
-                    query_id = row["query"].split("-")[0]
-                    
-                    if target_id==query_id: 
-                        # remove self-hits if missed by mmseqs
-                        to_drop.append(index)
+                # check whether fseek_results is empty after MMseqs2-filtering
+                if len(fseek_results) == 0:
+                    for t in MULTIMER_FRAC_THRESHOLDS:
+                        features[num_dir][f"multimer_frac_tm{t}"] = -1.0
+                    for t in HM_FRAC_THRESHOLDS:
+                        features[num_dir][f"hm_frac_tm{t}"] = -1.0
+                else:
+                    # load bioassembly cache with precalculated stoichiometries for entire PDB,
+                    # kept alongside whichever foldseek_db is in use
+                    stoich_data = load_stoich_cache(foldseek_db)
 
-                    stoich = stoich_data[target]
-                    if "homo" in stoich:
-                        stoich = "homomultimer"
-                    # change heterodimer/heteromultimer to heteromultimer
-                    elif "hetero" in stoich:
-                        stoich = "heteromultimer"
-                    fseek_results.loc[index, "stoichiometry"] = stoich
-                    fseek_results.loc[index, "target"] = target
-                
-                # remove self-hits
-                fseek_results = fseek_results.drop(index=to_drop)
+                    # use the stoichiometry cache and assign a stoichiometry to the hits in the foldseek-file
+                    to_drop = []
+                    for index, row in fseek_results.iterrows():
+                        target = row["target"].split("_")[0]
+                        # change all homodimer/homomultimer to homomultimer only
+                        target_id = target.split("-")[0].lower()
+                        query_id = row["query"].split("-")[0].lower()
 
-                # remove duplicates, drop_duplicates automatically keeps the first one
-                fseek_results = fseek_results.drop_duplicates(subset=['query','target'])
+                        if target_id == query_id:
+                            # remove self-hits if missed by mmseqs
+                            to_drop.append(index)
 
-                if args.save_all_outputs:
-                    fseek_results.to_csv(f"{out_dir}/foldseek_related/fseek_mmseqs_duplicates_filtered_with_stoichs_{query}.csv",index=False)
-            
-                # update features dict with homology information
-                features = get_homology_fractions(fseek_results, features, num_dir)
-            
-            print(f"Found the following homology information for {query}:")
-            print(features[num_dir],"\n")
+                        stoich = stoich_data.get(target, "unknown") or "unknown"
+                        if "homo" in stoich:
+                            stoich = "homomultimer"
+                        # change heterodimer/heteromultimer to heteromultimer
+                        elif "hetero" in stoich:
+                            stoich = "heteromultimer"
+                        fseek_results.loc[index, "stoichiometry"] = stoich
+                        fseek_results.loc[index, "pdb_code"] = target_id
+                        fseek_results.loc[index, "target"] = target
+
+                    # remove self-hits
+                    fseek_results = fseek_results.drop(index=to_drop)
+
+                    # remove duplicates, drop_duplicates automatically keeps the first one
+                    fseek_results = fseek_results.drop_duplicates(subset=['query', 'target'])
+
+                    if args.save_all_outputs:
+                        fseek_results.to_csv(f"{out_dir}/foldseek_related/fseek_mmseqs_duplicates_filtered_with_stoichs_{query}.csv", index=False)
+
+                    # update features dict with homology information
+                    features = get_homology_fractions(fseek_results, features, num_dir)
+
+                print(f"Found the following homology information for {query}:")
+                print(features[num_dir], "\n")
 
             print("Now looking for structural consensus using USalign (this can take a while for large proteins): ")
-            
-            # initialize a combos_tried array to store the combos that have been analyzed to avoid
-            # trying the combo twice
-            combos_tried = []
-            # initialize arrays to store tm-scores in 
-            tm1s=[]
-            tm2s=[]
-            # loop through all combinations of structures
-            for structure1 in tqdm.tqdm(structures):
-                for structure2 in structures:
-                    # check that it's not a self-comparison or a comparison that has already been made
-                    if structure1!=structure2 and ((structure1+structure2) not in combos_tried) and ((structure2+structure1) not in combos_tried):
-                        # run USalign
-                        cmd = ["USalign", structure1, structure2, "-mm", "1"]
-                        align_out = subprocess.check_output(cmd).decode('utf-8')
-                        align_output = align_out.strip().split('\n')
-                        # save outputs if flag is set
-                        if args.save_all_outputs:
-                            struct_desc1 = structure1.split("/")[-1].split(".")[0]
-                            struct_desc2 = structure2.split("/")[-1].split(".")[0]
-                            with open(f"{out_dir}/usalign_results_{query}.out","a+") as f:
-                                f.write(f"Align output for {struct_desc1} vs {struct_desc2}\n")
-                                f.write(align_out)
-                                f.write("\n")
-                        # retrieve correct line of output
-                        temp_split_1 = align_output[14].split(" ")
-                        temp_split_2 = align_output[15].split(" ")
-                        # add scores to tm-arrays
-                        tm1s.append(float(temp_split_1[1]))
-                        tm2s.append(float(temp_split_2[1]))
-                        # add the combos that were analyzed to combos_tried
-                        combos_tried.append(structure1+structure2)
-                        combos_tried.append(structure2+structure1)
-
-            # check that tm1s and tm2s correct the same info
-            # since the structures are predictions of the same sequence they should be the same
-            # if they're not the same this could be an indication that there are structures of different
-            # sequences in the directory
-            if tm1s!=tm2s:
-                print("One or more values of tm are different")
-                print("proceed with caution")
-
-            # add the resulting structural consensus to the features dir
-            features[num_dir]["structural_consensus"] = round(sum(tm1s)/len(tm1s),6)
-            print(f"structural consensus for {query} is {features[num_dir]['structural_consensus']}")
+            consensus_mean, consensus_min, consensus_max = get_structural_consensus(structures, query, out_dir, args.save_all_outputs)
+            features[num_dir]["structural_consensus_mean"] = consensus_mean
+            features[num_dir]["structural_consensus_min"] = consensus_min
+            features[num_dir]["structural_consensus_max"] = consensus_max
+            print(f"structural consensus for {query} is {features[num_dir]['structural_consensus_mean']}")
 
             print("Now continuing with interface features: ")
-            print("Running FreeSASA")
+            print("Getting best_contact_score_max from SPOC")
+            spoc = analyze_spoc(pairs, query)
+            features[num_dir]["best_contact_score_max"] = spoc["best_contact_score_max"] if spoc else float("nan")
 
-            # for freesasa we need to run it both for the full predicted complex and 
-            # each chain separately to get statistics on the interface
-            # in case of total_interaction_area we have: (chain_A_total+chain_B_total)-complex_total=total_interaction_area
-            # initalize temp directory for storing the separated chains
-            os.makedirs(f"{out_dir}/separated_chains_tmp", exist_ok=True)
-            
-            # method for separating and saving the chains of a complex
-            def save_chain(full, chain, out):
-                with open(full) as fi, open(out, "w") as fo:
-                    for ln in fi:
-                        if ln.startswith(("ATOM","HETATM")) and ln[21:22].strip()==chain:
-                            fo.write(ln)
-                    fo.write("END\n")
+            print("Getting AlphaFold confidence scalars (min_iptm, min_rc)")
+            af_scalars = aggregate_af_scalars(pkl_files)
+            features[num_dir]["min_iptm"] = af_scalars["min_iptm"]
+            features[num_dir]["min_rc"] = af_scalars["min_rc"]
 
-            # initialize total_interaction_area
-            total_interaction_area = 0
-            for structure in tqdm.tqdm(structures):
-                # run freesasa for full complex
-                cmd = ["freesasa", structure]
-                freesasa_out = subprocess.check_output(cmd).decode('utf-8')
-                
-                # retrieve output
-                freesasa_output = freesasa_out.strip().split('\n')
-                
-                # get names of chain1 and chain2 (usually A and B)
-                chain1 = freesasa_output[-2].split(" ")[1]
-                chain2 = freesasa_output[-1].split(" ")[1]
-                
-                # get the total exposed area (polar+apolar)
-                total = float(freesasa_output[-5].split(" ")[-1])
+            print("Running ipSAE (this can take a while)")
+            features[num_dir]["avg_ipsae"] = compute_avg_ipsae(pairs, PAE_CUTOFF, DIST_CUTOFF)
 
-                # get name to specify specific model
-                specific_model = f"{query}_{structure.split('/')[-1].split('.')[0]}"
-
-                # separate chains using method defined above
-                save_chain(structure,chain1,f"{out_dir}/separated_chains_tmp/{specific_model}_{chain1}.pdb")
-                save_chain(structure,chain2,f"{out_dir}/separated_chains_tmp/{specific_model}_{chain2}.pdb")
-                
-                # run freesasa for each separated chain and get their total exposed area
-                cmd1 = ["freesasa", f"{out_dir}/separated_chains_tmp/{specific_model}_{chain1}.pdb"]
-                cmd2 = ["freesasa", f"{out_dir}/separated_chains_tmp/{specific_model}_{chain2}.pdb"]
-                freesasa_out1 = subprocess.check_output(cmd1).decode('utf-8')
-                freesasa_output1 = freesasa_out1.strip().split('\n')
-                freesasa_out2 = subprocess.check_output(cmd2).decode('utf-8')
-                freesasa_output2 = freesasa_out2.strip().split('\n')
-                total_1 = float(freesasa_output1[-4].split(" ")[-1])
-                total_2 = float(freesasa_output2[-4].split(" ")[-1])
-                
-                # calculate total interaction area
-                total_interaction_area+=(total_1+total_2)-total
-
-                # if save outputs is true save all freesasa outputs
-                if args.save_all_outputs:
-                    struct_desc = structure.split("/")[-1].split(".")[0]
-                    with open(f"{out_dir}/freesasa_results_{query}.out","a+") as f:
-                        f.write(f"FreeSASA results for {struct_desc}\n")
-                        f.write(freesasa_out)
-                        f.write("\n")
-                        f.write(f"FreeSASA results for {struct_desc} chain A\n")
-                        f.write(freesasa_out1)
-                        f.write("\n")                        
-                        f.write(f"FreeSASA results for {struct_desc} chain B\n")
-                        f.write(freesasa_out2)
-                        f.write("\n")
-
-            # remove separated chain files if flag is not set    
-            if not args.save_all_outputs:
-                shutil.rmtree(f"{out_dir}/separated_chains_tmp/")
-
-            # cannot be 0 since this would have raised a ValueError before
-            total_interaction_area=total_interaction_area/len(structures)
-
-            print(f"The average total interaction area across all {len(structures)} is {round(total_interaction_area,2)}")
-            # update feature dict with total_interaction_area
-            features[num_dir]["total_interaction_area"] = total_interaction_area
-
-            print("Getting best_plddt_max and best_pae_min features")
-
-            # use method from SPOC github: https://github.com/walterlab-HMS/SPOC
-            # script adapted to only return the info needed for this function
-            if_data = analyze_complex(structures,pkl_files,query)
-
-            # update feature dict with best_plddt_max and best_pae_min
-            features[num_dir]["best_plddt_max"] = if_data["best_plddt_max"]
-            features[num_dir]["best_pae_min"] = if_data["best_pae_min"]
+            # derived features (see notebooks/feature_selection_crossvalidation.ipynb)
+            features[num_dir]["iptm_rc_prod"] = features[num_dir]["min_iptm"] * features[num_dir]["min_rc"]
+            features[num_dir]["foldseek_specificity"] = features[num_dir]["hm_frac_tm0.8"] / (features[num_dir]["multimer_frac_tm0.8"] + 1e-6)
 
             # save all features if flag is set
             if args.save_all_outputs:
                 feature_df = pd.DataFrame(features[num_dir], index=[0])
                 feature_df.columns = features[num_dir].keys()
-                feature_df.to_csv(f"{out_dir}/features_{query}.csv",index=False)
-            
+                feature_df.to_csv(f"{out_dir}/features_{query}.csv", index=False)
+
             # transform features into pandas DataFrame
             data = pd.DataFrame([features[num_dir]])
 
             # enforce correct order of features
-            X = data[homology_feats_norm]  
+            X = data[homology_feats_order]
 
-            # run homology model
-            proba = homology_model.predict_proba(X)[:, 1]
-            print(f"{query} predicted with probability {round(proba[0],2)}")
+            # run homology model (pipeline includes its own StandardScaler)
+            proba = homology_pipeline.predict_proba(X.to_numpy())[:, 1]
+            print(f"{query} predicted with probability {round(proba[0], 2)}")
 
             # save probability (2 decimals) to array
-            probs.append(round(proba[0],2))
+            probs.append(round(proba[0], 2))
 
         else:
             print("Running model without Homology Information")
             print("Retrieving the necessary features")
-            # use method from SPOC github: https://github.com/walterlab-HMS/SPOC
-            # script adapted to only return the info needed for this function
-            if_data = analyze_complex(structures,pkl_files,query)
-            features[num_dir]["best_plddt_max"] = if_data["best_plddt_max"]
-            features[num_dir]["best_pae_min"] = if_data["best_pae_min"]
-            features[num_dir]["num_unique_contacts"] = if_data["num_unique_contacts"]
-            features[num_dir]["avg_iptm"] = if_data["iptm_mean"]
-            features[num_dir]["max_iptm"] = if_data["iptm_max"]
+
+            print("Getting best_contact_score_max from SPOC")
+            spoc = analyze_spoc(pairs, query)
+            features[num_dir]["best_contact_score_max"] = spoc["best_contact_score_max"] if spoc else float("nan")
+
+            print("Getting AlphaFold confidence scalars (avg_rc, avg_ptm, min_iptm, max_ptm)")
+            af_scalars = aggregate_af_scalars(pkl_files)
+            features[num_dir]["avg_rc"] = af_scalars["avg_rc"]
+            features[num_dir]["avg_ptm"] = af_scalars["avg_ptm"]
+            features[num_dir]["min_iptm"] = af_scalars["min_iptm"]
+            features[num_dir]["max_ptm"] = af_scalars["max_ptm"]
+
+            print("Running FreeSASA (total_interaction_area_max, fraction_buried_polar_area_min)")
+            freesasa = compute_freesasa(structures, query, out_dir, args.save_all_outputs)
+            features[num_dir]["total_interaction_area_max"] = freesasa["total_interaction_area_max"]
+            features[num_dir]["fraction_buried_polar_area_min"] = freesasa["fraction_buried_polar_area_min"]
+
+            print("Now looking for structural consensus using USalign (this can take a while for large proteins): ")
+            _, _, consensus_max = get_structural_consensus(structures, query, out_dir, args.save_all_outputs)
+            features[num_dir]["structural_consensus_max"] = consensus_max
+
             print("Features retrieved")
             print(features[num_dir])
+
+            # save all features if flag is set
+            if args.save_all_outputs:
+                feature_df = pd.DataFrame(features[num_dir], index=[0])
+                feature_df.columns = features[num_dir].keys()
+                feature_df.to_csv(f"{out_dir}/features_{query}.csv", index=False)
 
             # turn features to pandas DataFrame
             data = pd.DataFrame([features[num_dir]])
 
             # enforce correct order of features
-            X = data[no_homology_feats_norm] 
+            X = data[no_homology_feats_order]
 
             # run logistic regression that does not contain homology
-            proba = no_homology_model.predict_proba(X)[:, 1]
-            print(f"{query} predicted with probability {round(proba[0],2)}")
-            probs.append(round(proba[0],2))
+            proba = no_homology_pipeline.predict_proba(X)[:, 1]
+            print(f"{query} predicted with probability {round(proba[0], 2)}")
+            probs.append(round(proba[0], 2))
 
         # initialize empty pandas dataframe for saving the final probabilities
         final_df = pd.DataFrame()
 
         # zip probabilities and queries for easier looping
         query_probs = zip(queries, probs)
-        for (query,prob) in query_probs:
-
+        for (query, prob) in query_probs:
             # add results to final_df
-            row = pd.DataFrame({"query": [query], "prob": [prob]})
-            final_df = pd.concat([final_df,row])
+            row = pd.DataFrame({"query": [query], "probability": [prob]})
+            final_df = pd.concat([final_df, row])
 
         # save final dfs to a csv in the outdir
         if args.no_homology:
             if os.path.isfile(f"{out_dir}/logreg_prob_no_homology.csv"):
                 final_df.to_csv(f"{out_dir}/logreg_prob_no_homology.csv", mode='a', index=False, header=None)
                 print(f"final predictions appended to {out_dir}/logreg_prob_no_homology.csv")
-            else:    
+            else:
                 final_df.to_csv(f"{out_dir}/logreg_prob_no_homology.csv", index=False)
                 print(f"final predictions saved to {out_dir}/logreg_prob_no_homology.csv")
         else:
-            if os.path.isfile(f"{out_dir}/logreg_prob_no_homology.csv"):
+            if os.path.isfile(f"{out_dir}/logreg_prob_homology.csv"):
                 final_df.to_csv(f"{out_dir}/logreg_prob_homology.csv", mode='a', index=False, header=None)
                 print(f"final predictions appended to {out_dir}/logreg_prob_homology.csv")
             else:
                 final_df.to_csv(f"{out_dir}/logreg_prob_homology.csv", index=False)
                 print(f"final predictions saved to {out_dir}/logreg_prob_homology.csv")
+
 
 if __name__ == "__main__":
     main_start_time = time.time()
