@@ -42,8 +42,8 @@ For running the logistic regression function the following is
 python run.py --pred_dir directory_with_alphafold_predictions  
 ```
 
-The directory with alphafold predictions is required to contain at least two predicted structures (.pdb files, preferbly 25)
-and two result .pkl files (again preferebly 25) with pAEs and other metrics as well as one `ranked_0.pdb` file. 
+The directory with alphafold predictions is required to contain at least two predicted structures (.pdb files, preferbly 5)
+and two result .pkl files (again preferebly 5) with pAEs and other metrics as well as one `ranked_0.pdb` file. 
 
 #### Input directory structure, detailed: 
 The input directory can be in two forms: 
@@ -53,15 +53,15 @@ directory_with_alphafold_predictions
 ├── ranked_0.pdb
 ├── ...  
 ├── ...
-├── ranked_24.pdb
+├── ranked_4.pdb
 ├── unrelaxed_model_1_multimer_v3_pred_1.pdb
 ├── ...  
 ├── ...
-├── unrelaxed_model_5_multimer_v3_pred_5.pdb
+├── unrelaxed_model_5_multimer_v3_pred_1.pdb
 ├── result_model_1_multimer_v3_pred_1.pkl
 ├── ...  
 ├── ...
-└──result_model_5_multimer_v3_pred_5.pkl
+└──result_model_5_multimer_v3_pred_1.pkl
 ```
 
 or
@@ -71,23 +71,23 @@ directory_with_alphafold_predictions
 ├── complex1
 │   ├── ranked_0.pdb
 │   ├── ...
-│   ├── ranked_24.pdb
+│   ├── ranked_4.pdb
 │   ├── unrelaxed_model_1_multimer_v3_pred_1.pdb
 │   ├── ...
-│   ├── unrelaxed_model_5_multimer_v3_pred_5.pdb
+│   ├── unrelaxed_model_5_multimer_v3_pred_1.pdb
 │   ├── result_model_1_multimer_v3_pred_1.pkl
 │   ├── ...
-│   └── result_model_5_multimer_v3_pred_5.pkl
+│   └── result_model_5_multimer_v3_pred_1.pkl
 ├── complex2
 │   ├── ranked_0.pdb
 │   ├── ...
-│   ├── ranked_24.pdb
+│   ├── ranked_4.pdb
 │   ├── unrelaxed_model_1_multimer_v3_pred_1.pdb
 │   ├── ...
-│   ├── unrelaxed_model_5_multimer_v3_pred_5.pdb
+│   ├── unrelaxed_model_5_multimer_v3_pred_1.pdb
 │   ├── result_model_1_multimer_v3_pred_1.pkl
 │   ├── ...
-│   └── result_model_5_multimer_v3_pred_5.pkl
+│   └── result_model_5_multimer_v3_pred_1.pkl
 ```
 
 The `run.py` script accepts both of these directory structures. 
@@ -97,7 +97,7 @@ The script will automatically generate an output-folder called `logreg_outputs` 
 
 Other optional flags in the script: 
 
-`--foldseek_db` - this is set to `None` by default and will then download the pdb using Foldseek to `data/foldseek_database/`. It will only do this once. If you want to use a different Foldseek database that you have previously downloaded you can use this flag.    
+`--foldseek_db` - this is set to `None` by default and will then download the pdb using Foldseek to `data/foldseek_database/`. It will only do this once. If you want to use a different Foldseek database that you have previously downloaded you can use this flag. The foldseek database used in the manuscript can be found in the follow [Zenodo record](https://zenodo.org/records/21309892). 
 `--aln_file_dir` - If you have already run several alignments that you would like to use instead of running foldseek again you can set this flag to the directory containing the alignments. The only requirement is that the file names must contain the protein_name so that the script can match the correct proteins to the correct alignment files. This works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.   
 `--aln_file` - If you want to point to specific files instead of an entire directory you can use this argument instead. Again, the protein name must be present in the alignment filename. This also works even if the directory only contains the files for a few of the proteins to be predicted. For the others the alignment will be run again.     
 `--experimental_structure_dir` - If you have a directory with experimental structures you can use this flag and specify the location.             
